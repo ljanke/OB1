@@ -1,0 +1,91 @@
+# Open Brain — Homelab + Tailscale stack.
+#
+# Three services:
+#   postgres  — Postgres 16 + pgvector, with init scripts that create the
+#               openbrain_app and openbrain_readonly roles + schema.
+#   mcp       — The Open Brain MCP server (Deno + Hono), bound to the host
+#               so Tailscale (running on the host) can route to it.
+#   ollama    — Optional. If you already run Ollama on another tailnet box,
+#               comment this out and point OLLAMA_URL at it instead.
+#
+# The mcp service binds to host port 8787. Run Tailscale on the host and the
+# tailnet hostname will resolve to https://<host>.<tailnet>.ts.net:8787.
+# Enable Tailscale Funnel on that port for phone/web Claude access.
+#
+# All secrets and dimensions live in .env (copy .env.example).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-openbrain}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      OPENBRAIN_APP_PASSWORD: ${OPENBRAIN_APP_PASSWORD}
+      OPENBRAIN_READONLY_PASSWORD: ${OPENBRAIN_READONLY_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    # Bind to localhost only by default; expose to the tailnet only via the
+    # mcp service. If you want DBeaver/TablePlus to reach Postgres directly
+    # via the tailnet, change this to "0.0.0.0:5432:5432" — Tailscale ACLs
+    # are then your gate.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-openbrain}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mcp:
+    build:
+      context: ./server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-openbrain}
+      DB_USER: openbrain_app
+      DB_PASSWORD: ${OPENBRAIN_APP_PASSWORD}
+      DB_POOL_SIZE: "10"
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      EMBED_DIM: ${EMBED_DIM:-768}
+      CHAT_API_BASE: ${CHAT_API_BASE:-}
+      CHAT_API_KEY: ${CHAT_API_KEY:-}
+      CHAT_MODEL: ${CHAT_MODEL:-}
+      MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
+      CITATION_BASE_URL: ${CITATION_BASE_URL:-https://openbrain.local/thoughts}
+      PORT: "8787"
+    # Bind to all interfaces so Tailscale (on the host) can reach it.
+    # If you prefer running Tailscale as a sidecar container instead, change
+    # this to "127.0.0.1:8787:8787" and add the sidecar.
+    ports:
+      - "8787:8787"
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    # GPU passthrough. Comment this out if you want CPU-only or are using
+    # an existing Ollama on another box (then also remove this service and
+    # set OLLAMA_URL in .env).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  postgres_data:
+  ollama_data:
