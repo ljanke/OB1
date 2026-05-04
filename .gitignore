@@ -7,7 +7,7 @@ supabase/
 .local/
 .agent/
 .claude.json
-local_dont_track/
+/local_dont_track/
 
 # Python caches
 __pycache__/
