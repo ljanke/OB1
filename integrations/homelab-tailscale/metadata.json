@@ -1,0 +1,30 @@
+{
+  "name": "Homelab + Tailscale Self-Hosted Deployment",
+  "description": "Deploy Open Brain on a single home box with Postgres + pgvector, local Ollama embeddings, and Tailscale-fronted access. Three docker-compose services, no Supabase, $0/month, data never leaves the home network.",
+  "category": "integrations",
+  "author": {
+    "name": "Leonard Janke",
+    "github": "ljanke"
+  },
+  "version": "1.0.0",
+  "requires": {
+    "open_brain": true,
+    "services": ["PostgreSQL", "pgvector", "Ollama", "Tailscale", "Docker"],
+    "tools": ["docker", "docker compose"]
+  },
+  "tags": [
+    "homelab",
+    "self-hosted",
+    "tailscale",
+    "ollama",
+    "postgresql",
+    "pgvector",
+    "docker-compose",
+    "privacy",
+    "local-first"
+  ],
+  "difficulty": "intermediate",
+  "estimated_time": "60 minutes",
+  "created": "2026-05-03",
+  "updated": "2026-05-10"
+}
