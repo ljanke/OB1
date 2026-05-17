@@ -108,12 +108,11 @@ export type CaptureInput = {
   metadata: Record<string, unknown>;
 };
 
-// Upsert by content fingerprint. The schema computes the same SHA256 of the
-// trimmed/lowercased/whitespace-collapsed content in `upsert_thought()`; this
-// query mirrors that normalization so identical captures dedupe via the
-// partial unique index on content_fingerprint. On conflict we refresh the
-// embedding (in case the model changed) and merge any new metadata fields
-// into the existing row's metadata.
+// Upsert by content fingerprint. The fingerprint is a SHA256 of the
+// trimmed/lowercased/whitespace-collapsed content, computed inline so dedupe
+// happens via the partial unique index on content_fingerprint. On conflict
+// we refresh the embedding (in case the model changed) and merge any new
+// metadata fields into the existing row's metadata.
 export async function captureThought(
   pool: Pool,
   input: CaptureInput,
@@ -182,13 +181,21 @@ export async function getStats(pool: Pool): Promise<Stats> {
        LIMIT 10`,
     );
 
-    // jsonb_typeof guards are required so a single malformed row (e.g. a
-    // chat model returning `topics: "foo"` instead of `topics: ["foo"]`)
-    // doesn't crash /stats with "cannot extract elements from a scalar".
+    // The CASE expression replaces non-array values with an empty array
+    // BEFORE jsonb_array_elements_text() runs. A separate WHERE-clause
+    // guard isn't sufficient: in a LATERAL join the planner is free to
+    // evaluate the SRF before applying the filter, which would still raise
+    // "cannot extract elements from a scalar" on a malformed row. Wrapping
+    // the SRF input in CASE makes correctness independent of plan choice.
     const topicsRes = await client.queryObject<{ k: string; c: number }>(
       `SELECT topic AS k, COUNT(*)::int AS c
-       FROM thoughts, jsonb_array_elements_text(metadata->'topics') AS topic
-       WHERE jsonb_typeof(metadata->'topics') = 'array'
+       FROM thoughts,
+            jsonb_array_elements_text(
+              CASE WHEN jsonb_typeof(metadata->'topics') = 'array'
+                   THEN metadata->'topics'
+                   ELSE '[]'::jsonb
+              END
+            ) AS topic
        GROUP BY topic
        ORDER BY c DESC
        LIMIT 10`,
@@ -196,8 +203,13 @@ export async function getStats(pool: Pool): Promise<Stats> {
 
     const peopleRes = await client.queryObject<{ k: string; c: number }>(
       `SELECT person AS k, COUNT(*)::int AS c
-       FROM thoughts, jsonb_array_elements_text(metadata->'people') AS person
-       WHERE jsonb_typeof(metadata->'people') = 'array'
+       FROM thoughts,
+            jsonb_array_elements_text(
+              CASE WHEN jsonb_typeof(metadata->'people') = 'array'
+                   THEN metadata->'people'
+                   ELSE '[]'::jsonb
+              END
+            ) AS person
        GROUP BY person
        ORDER BY c DESC
        LIMIT 10`,
