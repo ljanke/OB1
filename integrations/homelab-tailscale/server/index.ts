@@ -67,7 +67,7 @@ server.registerTool(
       "Search Open Brain memories by meaning. Read-only compatibility tool for ChatGPT-style search/fetch consumers.",
     annotations: { readOnlyHint: true },
     inputSchema: {
-      query: z.string().describe("The search query to run against Open Brain"),
+      query: z.string().min(1).describe("The search query to run against Open Brain"),
     },
   },
   async ({ query }) => {
@@ -127,9 +127,9 @@ server.registerTool(
       "Search captured thoughts by meaning. Use when the user asks about a topic, person, or idea they've previously captured.",
     annotations: { readOnlyHint: true },
     inputSchema: {
-      query: z.string().describe("What to search for"),
-      limit: z.number().optional().default(10),
-      threshold: z.number().optional().default(0.5),
+      query: z.string().min(1).describe("What to search for"),
+      limit: z.number().int().min(1).max(100).optional().default(10),
+      threshold: z.number().min(0).max(1).optional().default(0.5),
     },
   },
   async ({ query, limit, threshold }) => {
@@ -171,12 +171,13 @@ server.registerTool(
       "List recently captured thoughts with optional filters by type, topic, person, or time range.",
     annotations: { readOnlyHint: true },
     inputSchema: {
-      limit: z.number().optional().default(10),
+      limit: z.number().int().min(1).max(100).optional().default(10),
       type: z.string().optional()
         .describe("Filter by type: observation, task, idea, reference, person_note"),
       topic: z.string().optional().describe("Filter by topic tag"),
       person: z.string().optional().describe("Filter by person mentioned"),
-      days: z.number().optional().describe("Only thoughts from the last N days"),
+      days: z.number().int().min(1).max(3650).optional()
+        .describe("Only thoughts from the last N days"),
     },
   },
   async (opts) => {
@@ -246,7 +247,7 @@ server.registerTool(
       destructiveHint: false,
       idempotentHint: false,
     },
-    inputSchema: { content: z.string().describe("The thought to capture") },
+    inputSchema: { content: z.string().min(1).describe("The thought to capture") },
   },
   async ({ content }) => {
     try {

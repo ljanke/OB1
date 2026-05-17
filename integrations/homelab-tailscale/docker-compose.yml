@@ -3,14 +3,21 @@
 # Three services:
 #   postgres  — Postgres 16 + pgvector, with init scripts that create the
 #               openbrain_app and openbrain_readonly roles + schema.
-#   mcp       — The Open Brain MCP server (Deno + Hono), bound to the host
-#               so Tailscale (running on the host) can route to it.
+#   mcp       — The Open Brain MCP server (Deno + Hono). Bound to 127.0.0.1
+#               only so the LAN can't reach it directly. Tailscale on the
+#               host fronts it via `tailscale serve` (HTTPS, real cert).
 #   ollama    — Optional. If you already run Ollama on another tailnet box,
 #               comment this out and point OLLAMA_URL at it instead.
 #
-# The mcp service binds to host port 8787. Run Tailscale on the host and the
-# tailnet hostname will resolve to https://<host>.<tailnet>.ts.net:8787.
-# Enable Tailscale Funnel on that port for phone/web Claude access.
+# Tailnet-only deployment pattern (recommended):
+#   1. mcp binds 127.0.0.1:8787 → physically unreachable from the LAN.
+#   2. `sudo tailscale serve --bg --https=443 http://127.0.0.1:8787` on the
+#      host → Tailscale's local proxy terminates TLS on the tailnet IP at
+#      port 443 with a Tailscale-issued cert and forwards to the loopback
+#      MCP server. Only WireGuard-authenticated tailnet peers can reach it.
+#   3. Optional `tailscale funnel --bg 443` if you want phone/claude.ai web
+#      access (caller is then anonymous from the public internet, but the
+#      x-brain-key + Tailscale-issued cert still gate access).
 #
 # All secrets and dimensions live in .env (copy .env.example).
 
@@ -62,11 +69,13 @@ services:
       MCP_ACCESS_KEY: ${MCP_ACCESS_KEY}
       CITATION_BASE_URL: ${CITATION_BASE_URL:-https://openbrain.local/thoughts}
       PORT: "8787"
-    # Bind to all interfaces so Tailscale (on the host) can reach it.
-    # If you prefer running Tailscale as a sidecar container instead, change
-    # this to "127.0.0.1:8787:8787" and add the sidecar.
+    # Loopback-only bind. The LAN cannot reach this port directly; tailnet
+    # access is provided exclusively via `tailscale serve` on the host (see
+    # the header comment above for the recommended setup). If you instead
+    # want the service reachable from the LAN, change this to "8787:8787"
+    # and accept that Tailscale ACLs no longer gate access.
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
 
   ollama:
     image: ollama/ollama:latest

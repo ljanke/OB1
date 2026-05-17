@@ -108,6 +108,12 @@ export type CaptureInput = {
   metadata: Record<string, unknown>;
 };
 
+// Upsert by content fingerprint. The schema computes the same SHA256 of the
+// trimmed/lowercased/whitespace-collapsed content in `upsert_thought()`; this
+// query mirrors that normalization so identical captures dedupe via the
+// partial unique index on content_fingerprint. On conflict we refresh the
+// embedding (in case the model changed) and merge any new metadata fields
+// into the existing row's metadata.
 export async function captureThought(
   pool: Pool,
   input: CaptureInput,
@@ -116,8 +122,23 @@ export async function captureThought(
   const client = await pool.connect();
   try {
     const result = await client.queryObject<{ id: string }>(
-      `INSERT INTO thoughts (content, embedding, metadata)
-       VALUES ($1, $2::vector, $3::jsonb)
+      `INSERT INTO thoughts (content, embedding, metadata, content_fingerprint)
+       VALUES (
+         $1,
+         $2::vector,
+         $3::jsonb,
+         encode(
+           sha256(
+             convert_to(lower(trim(regexp_replace($1, '\\s+', ' ', 'g'))), 'UTF8')
+           ),
+           'hex'
+         )
+       )
+       ON CONFLICT (content_fingerprint) WHERE content_fingerprint IS NOT NULL
+       DO UPDATE SET
+         embedding = EXCLUDED.embedding,
+         metadata = thoughts.metadata || COALESCE(EXCLUDED.metadata, '{}'::jsonb),
+         updated_at = now()
        RETURNING id`,
       [input.content, embStr, JSON.stringify(input.metadata)],
     );
@@ -136,52 +157,57 @@ export type Stats = {
   people: [string, number][];
 };
 
+// Aggregation runs entirely in Postgres so memory cost stays constant as the
+// thoughts table grows — previously this pulled every row to JS.
 export async function getStats(pool: Pool): Promise<Stats> {
   const client = await pool.connect();
   try {
-    const countRes = await client.queryObject<{ count: number }>(
-      "SELECT COUNT(*)::int AS count FROM thoughts",
-    );
-    const dataRes = await client.queryObject<{
-      metadata: Record<string, unknown>;
-      created_at: string;
+    const summaryRes = await client.queryObject<{
+      count: number;
+      earliest: string | null;
+      latest: string | null;
     }>(
-      "SELECT metadata, created_at FROM thoughts ORDER BY created_at DESC",
+      `SELECT COUNT(*)::int AS count,
+              MIN(created_at) AS earliest,
+              MAX(created_at) AS latest
+       FROM thoughts`,
     );
 
-    const count = countRes.rows[0]?.count ?? 0;
-    const rows = dataRes.rows;
+    const typesRes = await client.queryObject<{ k: string; c: number }>(
+      `SELECT metadata->>'type' AS k, COUNT(*)::int AS c
+       FROM thoughts
+       WHERE metadata ? 'type'
+       GROUP BY metadata->>'type'
+       ORDER BY c DESC
+       LIMIT 10`,
+    );
 
-    const types: Record<string, number> = {};
-    const topics: Record<string, number> = {};
-    const people: Record<string, number> = {};
+    const topicsRes = await client.queryObject<{ k: string; c: number }>(
+      `SELECT topic AS k, COUNT(*)::int AS c
+       FROM thoughts, jsonb_array_elements_text(metadata->'topics') AS topic
+       WHERE metadata ? 'topics'
+       GROUP BY topic
+       ORDER BY c DESC
+       LIMIT 10`,
+    );
 
-    for (const r of rows) {
-      const m = r.metadata || {};
-      const t = m.type;
-      if (typeof t === "string") types[t] = (types[t] || 0) + 1;
-      if (Array.isArray(m.topics)) {
-        for (const x of m.topics) {
-          if (typeof x === "string") topics[x] = (topics[x] || 0) + 1;
-        }
-      }
-      if (Array.isArray(m.people)) {
-        for (const x of m.people) {
-          if (typeof x === "string") people[x] = (people[x] || 0) + 1;
-        }
-      }
-    }
+    const peopleRes = await client.queryObject<{ k: string; c: number }>(
+      `SELECT person AS k, COUNT(*)::int AS c
+       FROM thoughts, jsonb_array_elements_text(metadata->'people') AS person
+       WHERE metadata ? 'people'
+       GROUP BY person
+       ORDER BY c DESC
+       LIMIT 10`,
+    );
 
-    const sort = (o: Record<string, number>): [string, number][] =>
-      Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, 10);
-
+    const s = summaryRes.rows[0];
     return {
-      count,
-      earliest: rows.at(-1)?.created_at ?? null,
-      latest: rows[0]?.created_at ?? null,
-      types: sort(types),
-      topics: sort(topics),
-      people: sort(people),
+      count: s?.count ?? 0,
+      earliest: s?.earliest ?? null,
+      latest: s?.latest ?? null,
+      types: typesRes.rows.map((r) => [r.k, r.c]),
+      topics: topicsRes.rows.map((r) => [r.k, r.c]),
+      people: peopleRes.rows.map((r) => [r.k, r.c]),
     };
   } finally {
     client.release();

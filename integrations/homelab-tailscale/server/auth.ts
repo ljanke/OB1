@@ -12,10 +12,12 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+// Header-only authentication. Query-string credentials (`?key=...`) leak
+// through proxy logs, server access logs, browser history, and Referrer
+// headers, so they're rejected here even though some upstream OB1 variants
+// accept them.
 export const requireBrainKey: MiddlewareHandler = async (c, next) => {
-  const headerKey = c.req.header("x-brain-key");
-  const queryKey = new URL(c.req.url).searchParams.get("key");
-  const provided = headerKey || queryKey || "";
+  const provided = c.req.header("x-brain-key") ?? "";
   if (!provided || !safeEqual(provided, MCP_ACCESS_KEY)) {
     return c.json({ error: "Invalid or missing access key" }, 401);
   }

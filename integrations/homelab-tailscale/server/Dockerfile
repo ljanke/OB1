@@ -14,6 +14,9 @@ USER deno
 
 EXPOSE 8787
 
+# `deno eval` runs with implicit access to all permissions (see `deno eval
+# --help`), so no `--allow-*` flag is needed here — and `eval` rejects them
+# anyway. If you switch to `deno run`, permission flags become required.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD deno eval "const r = await fetch('http://127.0.0.1:8787/health'); if (!r.ok) Deno.exit(1);"
 

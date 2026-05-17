@@ -3,6 +3,7 @@ import {
   CHAT_API_KEY,
   CHAT_MODEL,
   ENABLE_METADATA_EXTRACTION,
+  FETCH_TIMEOUT_MS,
 } from "./config.ts";
 
 const SYSTEM_PROMPT =
@@ -21,6 +22,9 @@ export async function extractMetadata(
 ): Promise<Record<string, unknown>> {
   if (!ENABLE_METADATA_EXTRACTION) return { ...FALLBACK };
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
   try {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (CHAT_API_KEY) headers.Authorization = `Bearer ${CHAT_API_KEY}`;
@@ -36,6 +40,7 @@ export async function extractMetadata(
           { role: "user", content: text },
         ],
       }),
+      signal: controller.signal,
     });
 
     if (!r.ok) return { ...FALLBACK };
@@ -46,6 +51,10 @@ export async function extractMetadata(
     if (typeof parsed !== "object" || parsed === null) return { ...FALLBACK };
     return parsed as Record<string, unknown>;
   } catch {
+    // Includes AbortError on timeout — silently fall back so capture
+    // continues even when the metadata endpoint is slow or unreachable.
     return { ...FALLBACK };
+  } finally {
+    clearTimeout(timer);
   }
 }

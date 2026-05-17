@@ -7,10 +7,14 @@ Self-hosted Open Brain on a single home box. No Supabase, no cloud, $0/month, da
 Three docker-compose services on your always-on box:
 
 - **postgres** — Postgres 16 + pgvector. Holds the `thoughts` table.
-- **mcp** — The Open Brain MCP server (Deno + Hono). Talks to Postgres, embeds via Ollama, exposes MCP at `/mcp` over HTTP. Gated by an `x-brain-key` header.
+- **mcp** — The Open Brain MCP server (Deno + Hono). Talks to Postgres, embeds via Ollama, exposes MCP at `/mcp` over HTTP on `127.0.0.1:8787`. Gated by an `x-brain-key` header.
 - **ollama** — Local embeddings (default model `nomic-embed-text`, 768 dim). Optional — if you already run Ollama on another tailnet box, point `OLLAMA_URL` at it and remove this service.
 
-Tailscale on the host gives every device in your tailnet a real-cert HTTPS URL like `https://homebox.tailnet-name.ts.net:8787/mcp`. Add that as a custom connector in Claude Desktop and your memory follows you across devices.
+Tailscale on the host runs `tailscale serve` in front of the loopback MCP port, giving every device in your tailnet a real-cert HTTPS URL like `https://homebox.tailnet-name.ts.net/mcp`. Add that as a custom connector in Claude Desktop and your memory follows you across devices.
+
+> **Trust boundary.** Anyone with `x-brain-key` plus the ability to send packets that pass Tailscale's WireGuard authentication (i.e., a tailnet member you've allowed via ACL) gets **full read/write** to your thoughts. There's no per-user RLS and no Supabase `auth.uid()`. Treat the access key like a database password and treat your tailnet ACLs as the perimeter. If you enable Tailscale Funnel, anyone on the public internet who guesses the key gets in — pick a long random key and rotate it if it ever leaves trusted hands.
+>
+> See the [MCP Tool Audit & Optimization Guide](../../docs/05-tool-audit.md) for how to think about minimizing tool surface area once your stack is live.
 
 ## Architecture vs. upstream
 
@@ -94,26 +98,33 @@ curl http://127.0.0.1:8787/ready -H "x-brain-key: $MCP_ACCESS_KEY"
 
 ### 5. Tailscale wiring
 
-If Tailscale is running on the host with `tailscale up`, the box already has a tailnet hostname like `homebox.tailnet-name.ts.net`. Test from another tailnet device:
+The MCP server binds only to `127.0.0.1:8787` — the LAN cannot reach it directly. Tailnet access goes exclusively through `tailscale serve`, which terminates TLS on the tailnet IP with a Tailscale-issued cert and forwards to the loopback service. This is the architecturally clean tailnet-only stance: only WireGuard-authenticated peers in your tailnet can reach the service, and Tailscale ACLs gate which of them.
+
+Make sure Tailscale is running on the host (`tailscale up`), then put it in front of the MCP server:
 
 ```bash
-curl https://homebox.tailnet-name.ts.net:8787/health
+sudo tailscale serve --bg --https=443 http://127.0.0.1:8787
 ```
 
-For phone / claude.ai web access, enable Funnel:
+That maps `https://<host>.<tailnet>.ts.net/` → `http://127.0.0.1:8787`. Verify from another tailnet device:
 
 ```bash
-sudo tailscale serve --bg --https=8787 http://127.0.0.1:8787
-sudo tailscale funnel --bg 8787
+curl https://homebox.tailnet-name.ts.net/health
 ```
 
-(Read `tailscale serve` and `tailscale funnel` docs for the current syntax — Tailscale's CLI evolves.)
+For phone / claude.ai web access (callers outside the tailnet), additionally enable Funnel — be aware this exposes the URL to the public internet, gated only by `x-brain-key`:
+
+```bash
+sudo tailscale funnel --bg 443
+```
+
+Tailscale CLI evolves; if these flags differ in your version, see [`tailscale serve`](https://tailscale.com/kb/1242/tailscale-serve) and [`tailscale funnel`](https://tailscale.com/kb/1223/funnel).
 
 ### 6. Connect Claude Desktop
 
 Settings → Connectors → Add custom connector:
 
-- **URL**: `https://homebox.tailnet-name.ts.net:8787/mcp`
+- **URL**: `https://homebox.tailnet-name.ts.net/mcp`
 - **Headers**: `x-brain-key: <the value you set in .env>`
 
 Open a chat, click the connector inspector, you should see tools: `capture_thought`, `search_thoughts`, `list_thoughts`, `thought_stats`, `search`, `fetch`. Test by saying "remember that I set up Open Brain on the homelab today."
@@ -131,16 +142,18 @@ The role can `SELECT` from any table but nothing else. Safe for casual inspectio
 
 ## Verification checklist
 
-1. `docker compose ps` — all three services `running`, postgres `(healthy)`.
+1. `docker compose ps` — all three services `running`, postgres `(healthy)`, mcp `(healthy)` after the start-period.
 2. `docker compose logs postgres` — init scripts ran without errors.
 3. `psql 'postgresql://openbrain_readonly:PASS@127.0.0.1/openbrain' -c 'SELECT count(*) FROM thoughts'` returns `0`.
 4. `psql 'postgresql://openbrain_readonly:PASS@127.0.0.1/openbrain' -c "INSERT INTO thoughts (content) VALUES ('test')"` is rejected (`permission denied`).
-5. `curl http://127.0.0.1:8787/health` returns `{"ok":true,...}`.
-6. From another tailnet device: `curl https://homebox.tailnet-name.ts.net:8787/ready -H "x-brain-key: $KEY"` returns `{"ok":true,"db":"connected"}`.
-7. In Claude Desktop with the connector added: ask "remember that the homelab Open Brain works." Confirm it returns "Captured as ..."
-8. `psql ... -c 'SELECT id, vector_dims(embedding) FROM thoughts'` shows `768` (or whatever `EMBED_DIM` you chose).
-9. Ask Claude "what have I captured about the homelab?" — confirm semantic search returns the thought from step 7.
-10. `docker compose restart` — thought is still there after the restart.
+5. `curl http://127.0.0.1:8787/health` returns `{"ok":true,...}` (from the host).
+6. From another tailnet device, after `tailscale serve` is up: `curl https://homebox.tailnet-name.ts.net/ready -H "x-brain-key: $KEY"` returns `{"ok":true,"db":"connected"}`.
+7. From the LAN (not on tailnet), `curl http://<lan-ip>:8787/health` should **fail** — port isn't bound to that interface. This confirms the loopback-only stance.
+8. In Claude Desktop with the connector added: ask "remember that the homelab Open Brain works." Confirm it returns "Captured as ..."
+9. `psql ... -c 'SELECT id, vector_dims(embedding) FROM thoughts'` shows `768` (or whatever `EMBED_DIM` you chose).
+10. Ask Claude "what have I captured about the homelab?" — confirm semantic search returns the thought from step 8.
+11. Capture the *same* text a second time. `SELECT count(*) FROM thoughts WHERE content = '<text>'` still returns 1 — dedupe via `content_fingerprint` is in effect.
+12. `docker compose restart` — thoughts are still there after the restart.
 
 ## Common gotchas
 
