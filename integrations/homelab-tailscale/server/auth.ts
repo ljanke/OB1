@@ -2,12 +2,15 @@ import type { MiddlewareHandler } from "hono";
 import { MCP_ACCESS_KEY } from "./config.ts";
 
 // Constant-time comparison so timing attacks can't enumerate the key one byte
-// at a time.
-function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+// at a time. The loop always runs `expected.length` iterations regardless of
+// the provided value's length, and any length mismatch is folded into the
+// diff accumulator instead of short-circuiting. `charCodeAt` returns NaN past
+// the end of a string; `| 0` coerces that to 0, so length-mismatched inputs
+// still XOR cleanly without an early return that would leak length.
+function safeEqual(provided: string, expected: string): boolean {
+  let diff = provided.length ^ expected.length;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= (provided.charCodeAt(i) | 0) ^ expected.charCodeAt(i);
   }
   return diff === 0;
 }

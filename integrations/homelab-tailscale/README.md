@@ -27,7 +27,7 @@ homelab-tailscale/
 ├── metadata.json               OB1 metadata
 ├── db/
 │   ├── 00-roles.sh             creates openbrain_app + openbrain_readonly
-│   └── 01-schema.sql           pgvector schema, vector(768), match_thoughts(), upsert_thought()
+│   └── 01-schema.sql           pgvector schema, vector(768), match_thoughts() RPC
 └── server/
     ├── deno.json               deps (Hono, @hono/mcp, deno-postgres, zod)
     ├── Dockerfile              denoland/deno:2.3.3 base

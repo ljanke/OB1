@@ -84,36 +84,13 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION upsert_thought(
-  p_content TEXT,
-  p_payload JSONB DEFAULT '{}'
-)
-RETURNS JSONB LANGUAGE plpgsql AS $$
-DECLARE
-  v_fingerprint TEXT;
-  v_id UUID;
-BEGIN
-  v_fingerprint := encode(
-    sha256(
-      convert_to(
-        lower(trim(regexp_replace(p_content, '\s+', ' ', 'g'))),
-        'UTF8'
-      )
-    ),
-    'hex'
-  );
-
-  INSERT INTO thoughts (content, content_fingerprint, metadata)
-  VALUES (p_content, v_fingerprint, COALESCE(p_payload->'metadata', '{}'::jsonb))
-  ON CONFLICT (content_fingerprint) WHERE content_fingerprint IS NOT NULL
-  DO UPDATE SET
-    updated_at = now(),
-    metadata = thoughts.metadata || COALESCE(EXCLUDED.metadata, '{}'::jsonb)
-  RETURNING id INTO v_id;
-
-  RETURN jsonb_build_object('id', v_id, 'fingerprint', v_fingerprint);
-END;
-$$;
+-- Note: there used to be an `upsert_thought()` SQL function here, but it
+-- duplicated the dedupe logic that `server/queries.ts:captureThought` already
+-- runs inline (and silently diverged from it — the SQL version didn't refresh
+-- the embedding on conflict). The TS path is the single source of truth.
+-- If a future Python/CLI recipe needs a text-only backfill upsert primitive,
+-- reintroduce it here deliberately with its semantics documented and have
+-- the TS path call it via RPC.
 
 -- ---------- Grants ---------------------------------------------------------
 

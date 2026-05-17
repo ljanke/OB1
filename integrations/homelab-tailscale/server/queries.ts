@@ -182,10 +182,13 @@ export async function getStats(pool: Pool): Promise<Stats> {
        LIMIT 10`,
     );
 
+    // jsonb_typeof guards are required so a single malformed row (e.g. a
+    // chat model returning `topics: "foo"` instead of `topics: ["foo"]`)
+    // doesn't crash /stats with "cannot extract elements from a scalar".
     const topicsRes = await client.queryObject<{ k: string; c: number }>(
       `SELECT topic AS k, COUNT(*)::int AS c
        FROM thoughts, jsonb_array_elements_text(metadata->'topics') AS topic
-       WHERE metadata ? 'topics'
+       WHERE jsonb_typeof(metadata->'topics') = 'array'
        GROUP BY topic
        ORDER BY c DESC
        LIMIT 10`,
@@ -194,7 +197,7 @@ export async function getStats(pool: Pool): Promise<Stats> {
     const peopleRes = await client.queryObject<{ k: string; c: number }>(
       `SELECT person AS k, COUNT(*)::int AS c
        FROM thoughts, jsonb_array_elements_text(metadata->'people') AS person
-       WHERE metadata ? 'people'
+       WHERE jsonb_typeof(metadata->'people') = 'array'
        GROUP BY person
        ORDER BY c DESC
        LIMIT 10`,
